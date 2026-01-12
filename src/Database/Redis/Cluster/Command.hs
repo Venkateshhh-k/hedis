@@ -44,49 +44,17 @@ data CommandInfo = CommandInfo
     } deriving (Show)
 
 instance RedisResult CommandInfo where
+    -- Old Redis format (6 elements)
     decode (MultiBulk (Just
         [ Bulk (Just commandName)
         , Integer aritySpec
         , MultiBulk (Just replyFlags)
         , Integer firstKeyPos
         , Integer lastKeyPos
-        , Integer replyStepCount])) = do
-            parsedFlags <- mapM parseFlag replyFlags
-            lastKey <- parseLastKeyPos
-            return $ CommandInfo
-                { name = commandName
-                , arity = parseArity aritySpec
-                , flags = parsedFlags
-                , firstKeyPosition = firstKeyPos
-                , lastKeyPosition = lastKey
-                , stepCount = replyStepCount
-                } where
-        parseArity int = case int of
-            i | i >= 0 -> Required i
-            i -> MinimumRequired $ abs i
-        parseFlag :: Reply -> Either Reply Flag
-        parseFlag (SingleLine flag) = return $ case flag of
-            "write" -> Write
-            "readonly" -> ReadOnly
-            "denyoom" -> DenyOOM
-            "admin" -> Admin
-            "pubsub" -> PubSub
-            "noscript" -> NoScript
-            "random" -> Random
-            "sort_for_script" -> SortForScript
-            "loading" -> Loading
-            "stale" -> Stale
-            "skip_monitor" -> SkipMonitor
-            "asking" -> Asking
-            "fast" -> Fast
-            "movablekeys" -> MovableKeys
-            other -> Other other
-        parseFlag bad = Left bad
-        parseLastKeyPos :: Either Reply LastKeyPositionSpec
-        parseLastKeyPos = return $ case lastKeyPos of
-            i | i < 0 -> UnlimitedKeys (-i - 1)
-            i -> LastKeyPosition i
-    -- since redis 6.0
+        , Integer replyStepCount])) = 
+            parseCommandInfo commandName aritySpec replyFlags firstKeyPos lastKeyPos replyStepCount
+
+    -- Redis 6.0 format (7 elements)
     decode (MultiBulk (Just
         [ name@(Bulk (Just _))
         , arity@(Integer _)
@@ -98,7 +66,58 @@ instance RedisResult CommandInfo where
         ])) =
         decode (MultiBulk (Just [name, arity, flags, firstPos, lastPos, step]))
 
+    -- Valkey/Redis 7+ format (10 elements)
+    decode (MultiBulk (Just
+        ( Bulk (Just commandName)
+        : Integer aritySpec
+        : MultiBulk (Just replyFlags)
+        : Integer firstKeyPos
+        : Integer lastKeyPos
+        : Integer replyStepCount
+        : _rest))) =  -- ignore extra fields (ACL categories, tips, key specs, subcommands)
+            parseCommandInfo commandName aritySpec replyFlags firstKeyPos lastKeyPos replyStepCount
+
     decode e = Left e
+
+-- Helper function to parse CommandInfo
+parseCommandInfo :: BS.ByteString -> Integer -> [Reply] -> Integer -> Integer -> Integer -> Either Reply CommandInfo
+parseCommandInfo commandName aritySpec replyFlags firstKeyPos lastKeyPos replyStepCount = do
+    parsedFlags <- mapM parseFlag replyFlags
+    let lastKey = parseLastKeyPos lastKeyPos
+    return $ CommandInfo
+        { name = commandName
+        , arity = parseArity aritySpec
+        , flags = parsedFlags
+        , firstKeyPosition = firstKeyPos
+        , lastKeyPosition = lastKey
+        , stepCount = replyStepCount
+        }
+  where
+    parseArity int = case int of
+        i | i >= 0 -> Required i
+        i -> MinimumRequired $ abs i
+    parseFlag :: Reply -> Either Reply Flag
+    parseFlag (SingleLine flag) = return $ case flag of
+        "write" -> Write
+        "readonly" -> ReadOnly
+        "denyoom" -> DenyOOM
+        "admin" -> Admin
+        "pubsub" -> PubSub
+        "noscript" -> NoScript
+        "random" -> Random
+        "sort_for_script" -> SortForScript
+        "loading" -> Loading
+        "stale" -> Stale
+        "skip_monitor" -> SkipMonitor
+        "asking" -> Asking
+        "fast" -> Fast
+        "movablekeys" -> MovableKeys
+        other -> Other other
+    parseFlag bad = Left bad
+    parseLastKeyPos :: Integer -> LastKeyPositionSpec
+    parseLastKeyPos i
+        | i < 0     = UnlimitedKeys (-i - 1)
+        | otherwise = LastKeyPosition i
 
 newInfoMap :: [CommandInfo] -> InfoMap
 newInfoMap = InfoMap . HM.fromList . map (\c -> (Char8.unpack $ name c, c))
