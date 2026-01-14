@@ -86,7 +86,6 @@ instance RedisResult CommandInfo where
         parseLastKeyPos = return $ case lastKeyPos of
             i | i < 0 -> UnlimitedKeys (-i - 1)
             i -> LastKeyPosition i
-    -- since redis 6.0 (7 elements with ACL categories)
     decode (MultiBulk (Just
         [ name@(Bulk (Just _))
         , arity@(Integer _)
@@ -94,10 +93,9 @@ instance RedisResult CommandInfo where
         , firstPos@(Integer _)
         , lastPos@(Integer _)
         , step@(Integer _)
-        , MultiBulk _  -- ACL categories
+        , MultiBulk _
         ])) =
         decode (MultiBulk (Just [name, arity, flags, firstPos, lastPos, step]))
-    -- since redis 7.0 / Valkey (10 elements)
     decode (MultiBulk (Just
         [ name@(Bulk (Just _))
         , arity@(Integer _)
@@ -105,17 +103,28 @@ instance RedisResult CommandInfo where
         , firstPos@(Integer _)
         , lastPos@(Integer _)
         , step@(Integer _)
-        , MultiBulk _  -- ACL categories
-        , MultiBulk _  -- Tips
-        , MultiBulk _  -- Key specifications
-        , MultiBulk _  -- Sub commands
+        , MultiBulk _
+        , MultiBulk _
+        , MultiBulk _
+        , MultiBulk _
         ])) =
         decode (MultiBulk (Just [name, arity, flags, firstPos, lastPos, step]))
-    -- Catch-all for any other format with at least 6 elements (Valkey compatibility)
-    decode (MultiBulk (Just (name@(Bulk (Just _)) : arity@(Integer _) : flags@(MultiBulk (Just _)) : firstPos@(Integer _) : lastPos@(Integer _) : step@(Integer _) : _rest))) =
-        decode (MultiBulk (Just [name, arity, flags, firstPos, lastPos, step]))
-
+    decode (MultiBulk (Just list)) = 
+        case extractCommandInfoFields list of
+            Just (name, arity, flags, firstPos, lastPos, step) ->
+                decode (MultiBulk (Just [name, arity, flags, firstPos, lastPos, step]))
+            Nothing -> Left (MultiBulk (Just list))
     decode e = Left e
+
+extractCommandInfoFields :: [Reply] -> Maybe (Reply, Reply, Reply, Reply, Reply, Reply)
+extractCommandInfoFields list
+    | length list >= 6 =
+        case (list !! 0, list !! 1, list !! 2, list !! 3, list !! 4, list !! 5) of
+            (name@(Bulk (Just _)), arity@(Integer _), flags@(MultiBulk (Just _)), 
+             firstPos@(Integer _), lastPos@(Integer _), step@(Integer _)) ->
+                Just (name, arity, flags, firstPos, lastPos, step)
+            _ -> Nothing
+    | otherwise = Nothing
 
 -- Helper function to parse CommandInfo
 parseCommandInfo :: BS.ByteString -> Integer -> [Reply] -> Integer -> Integer -> Integer -> Either Reply CommandInfo
