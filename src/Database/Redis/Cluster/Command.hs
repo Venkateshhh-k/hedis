@@ -111,9 +111,10 @@ instance RedisResult CommandInfo where
         decode (MultiBulk (Just [name, arity, flags, firstPos, lastPos, step]))
     decode (MultiBulk (Just list)) = 
         case extractCommandInfoFields list of
-            Just (name, arity, flags, firstPos, lastPos, step) ->
-                decode (MultiBulk (Just [name, arity, flags, firstPos, lastPos, step]))
-            Nothing -> Left (MultiBulk (Just list))
+            Just (Bulk (Just commandName), Integer aritySpec, MultiBulk (Just replyFlags), 
+                  Integer firstKeyPos, Integer lastKeyPos, Integer replyStepCount) ->
+                parseCommandInfo commandName aritySpec replyFlags firstKeyPos lastKeyPos replyStepCount
+            _ -> Left (MultiBulk (Just list))
     decode e = Left e
 
 extractCommandInfoFields :: [Reply] -> Maybe (Reply, Reply, Reply, Reply, Reply, Reply)
